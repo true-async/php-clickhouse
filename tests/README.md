@@ -20,7 +20,7 @@ diffs its output against the expectation.
 
 | Path | Needs a server? | Covers |
 |------|-----------------|--------|
-| `000-load.phpt`, `001-classes.phpt` | no | module loads; classes/enums/exception hierarchy |
+| `000-load.phpt`, `001-classes.phpt`, `004-phpinfo.phpt` | no | module loads; classes/enums/exception hierarchy; phpinfo block |
 | `002-*` config validation | no | builder/array parsing and validation errors |
 | `010-connect-refused.phpt` | no | `ConnectionException` against a dead port |
 | `connection/` | yes | connect, auth, reconnect |
