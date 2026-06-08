@@ -130,7 +130,11 @@ jobs:
 
       # Rebuild the extension with gcov, re-run the suite, and report per-TU line
       # coverage of our own sources. Raw gcov (lcov 2.x misparses gcc-13 data).
+      # Aggregates the four TUs and fails the job if the combined line coverage
+      # drops below COVERAGE_MIN, so the covered set cannot silently regress.
       - name: Coverage (raw gcov, our TUs)
+        env:
+          COVERAGE_MIN: '93'   # aggregate line-coverage floor across our 4 TUs
         run: |
           CFLAGS="-O0 -g --coverage" CXXFLAGS="-O0 -g --coverage" LDFLAGS="--coverage" \
             ./configure --enable-clickhouse-async --with-php-config=/tmp/php/bin/php-config
@@ -138,17 +142,38 @@ jobs:
                 .libs/ch_client.o .libs/ch_transport.o .libs/ch_exceptions.o .libs/clickhouse_async.o
           make -j"$(nproc)"
           NO_INTERACTION=1 make test TESTS=tests/ >/dev/null 2>&1 || true
+
+          cd .libs
+          total=0; covered=0; rows=''
+          for tu in clickhouse_async ch_client ch_transport ch_exceptions; do
+            stat=$(gcov -o . "$tu" 2>/dev/null \
+              | grep -A1 "File '.*${tu}\.cpp'" | grep 'Lines executed' || true)
+            pct=$(printf '%s' "$stat" | sed -E 's/.*executed:([0-9.]+)% of ([0-9]+).*/\1/')
+            n=$(printf '%s' "$stat" | sed -E 's/.*executed:([0-9.]+)% of ([0-9]+).*/\2/')
+            [ -n "$n" ] || { echo "::error::no gcov data for ${tu}.cpp"; exit 1; }
+            cov=$(awk "BEGIN{printf \"%d\", ($pct*$n/100)+0.5}")
+            total=$((total + n)); covered=$((covered + cov))
+            rows="${rows}| ${tu}.cpp | ${pct}% | ${cov}/${n} |"$'\n'
+          done
+          [ "$total" -gt 0 ] || { echo "::error::no coverage data produced"; exit 1; }
+          agg=$(awk "BEGIN{printf \"%.2f\", $covered*100/$total}")
+
           {
             echo '## Coverage (raw gcov, our TUs)'
-            echo '```'
-            cd .libs
-            for tu in clickhouse_async ch_client ch_transport ch_exceptions; do
-              gcov -o . "$tu" 2>/dev/null \
-                | grep -A1 "File '.*${tu}\.cpp'" \
-                | grep -E "File|Lines executed"
-            done
-            echo '```'
+            echo ''
+            echo '| TU | Line coverage | Covered/Total |'
+            echo '|----|---------------|---------------|'
+            printf '%s' "$rows"
+            echo "| **Total** | **${agg}%** | **${covered}/${total}** |"
+            echo ''
+            echo "Floor: ${COVERAGE_MIN}% (fails the job below this)."
           } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "aggregate line coverage: ${agg}% (floor ${COVERAGE_MIN}%)"
+          if awk "BEGIN{exit !($agg < $COVERAGE_MIN)}"; then
+            echo "::error::aggregate coverage ${agg}% is below the ${COVERAGE_MIN}% floor"
+            exit 1
+          fi
 
       - name: Upload test diffs on failure
         if: failure()
