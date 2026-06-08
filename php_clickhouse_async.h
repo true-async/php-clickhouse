@@ -1,0 +1,23 @@
+/*
+  +----------------------------------------------------------------------+
+  | php-clickhouse — native async ClickHouse client for PHP TrueAsync    |
+  +----------------------------------------------------------------------+
+  | Licensed under the Apache License, Version 2.0 (the "License").      |
+  +----------------------------------------------------------------------+
+  | Author: Edmond                                                       |
+  +----------------------------------------------------------------------+
+*/
+
+#ifndef PHP_CLICKHOUSE_ASYNC_H
+#define PHP_CLICKHOUSE_ASYNC_H
+
+extern zend_module_entry clickhouse_async_module_entry;
+#define phpext_clickhouse_async_ptr &clickhouse_async_module_entry
+
+#define PHP_CLICKHOUSE_ASYNC_VERSION "0.1.0-dev"
+
+#ifdef ZTS
+#include "TSRM.h"
+#endif
+
+#endif /* PHP_CLICKHOUSE_ASYNC_H */

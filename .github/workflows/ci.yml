@@ -1,0 +1,268 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    env:
+      CLICKHOUSE_HOST: 127.0.0.1
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_TLS_PORT: 9440
+      CLICKHOUSE_USER: test
+      CLICKHOUSE_PASSWORD: test
+
+    steps:
+      - name: Checkout (with clickhouse-cpp submodule)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # Run ClickHouse via `docker run` (not a `service`) so we can mount a
+      # self-signed cert and enable the secure native port 9440 — services start
+      # before any step, so a step-generated cert cannot be mounted into them.
+      # This lets the TLS test (connection/001-tls) run instead of skipping.
+      - name: Start ClickHouse (native 9000 + TLS 9440)
+        run: |
+          mkdir -p "$RUNNER_TEMP/ch/certs" "$RUNNER_TEMP/ch/config.d"
+          openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+            -keyout "$RUNNER_TEMP/ch/certs/server.key" -out "$RUNNER_TEMP/ch/certs/server.crt"
+          chmod 644 "$RUNNER_TEMP/ch/certs/server.key"
+          printf '%s\n' \
+            '<clickhouse>' \
+            '  <tcp_port_secure>9440</tcp_port_secure>' \
+            '  <openSSL><server>' \
+            '    <certificateFile>/etc/clickhouse-server/certs/server.crt</certificateFile>' \
+            '    <privateKeyFile>/etc/clickhouse-server/certs/server.key</privateKeyFile>' \
+            '    <verificationMode>none</verificationMode>' \
+            '    <cacheSessions>true</cacheSessions>' \
+            '    <disableProtocols>sslv2,sslv3</disableProtocols>' \
+            '  </server></openSSL>' \
+            '</clickhouse>' > "$RUNNER_TEMP/ch/config.d/tls.xml"
+          docker run -d --name clickhouse \
+            -p 9000:9000 -p 8123:8123 -p 9440:9440 \
+            -e CLICKHOUSE_USER=test -e CLICKHOUSE_PASSWORD=test \
+            -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+            --ulimit nofile=262144:262144 \
+            -v "$RUNNER_TEMP/ch/config.d/tls.xml:/etc/clickhouse-server/config.d/tls.xml:ro" \
+            -v "$RUNNER_TEMP/ch/certs:/etc/clickhouse-server/certs:ro" \
+            clickhouse/clickhouse-server:latest
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf bison re2c pkg-config cmake \
+            libuv1-dev libssl-dev libxml2-dev libsqlite3-dev
+
+      - name: Build clickhouse-cpp (static, PIC, native Bool)
+        run: |
+          cmake -S third_party/clickhouse-cpp -B third_party/clickhouse-cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCH_MAP_BOOL_TO_UINT8=OFF \
+            -DWITH_OPENSSL=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_BENCHMARK=OFF
+          cmake --build third_party/clickhouse-cpp/build -j"$(nproc)"
+
+      - name: Build PHP with TrueAsync (ZTS)
+        env:
+          # php-src and php-async (ext/async) are two separate repos whose engine
+          # ABI must match. They are pinned to a known-good commit pair; bump both
+          # together. The async engine API is at v0.20.0
+          # (zend_async_scheduler_register carries scope_await_after_cancellation_fn).
+          PHP_SRC_SHA: 568c83c6b307417d1f75690604353c65df865aa8
+          PHP_ASYNC_SHA: 6b5aaa5d2ea90744a8c4e8c7c4e8d2b4cd24e14a
+        run: |
+          # Shallow-fetch the exact pinned commits (GitHub allows fetch-by-SHA).
+          git init /tmp/php-src
+          git -C /tmp/php-src remote add origin https://github.com/true-async/php-src.git
+          git -C /tmp/php-src fetch --depth=1 origin "$PHP_SRC_SHA"
+          git -C /tmp/php-src checkout --detach FETCH_HEAD
+          # ext/async lives in a separate repo and is not part of php-src.
+          git init /tmp/php-src/ext/async
+          git -C /tmp/php-src/ext/async remote add origin https://github.com/true-async/php-async.git
+          git -C /tmp/php-src/ext/async fetch --depth=1 origin "$PHP_ASYNC_SHA"
+          git -C /tmp/php-src/ext/async checkout --detach FETCH_HEAD
+          cd /tmp/php-src
+          ./buildconf --force
+          ./configure --prefix=/tmp/php \
+            --enable-zts \
+            --enable-async \
+            --enable-sockets \
+            --with-openssl \
+            --disable-cgi \
+            --without-pear
+          make -j"$(nproc)"
+          make install
+          echo "/tmp/php/bin" >> "$GITHUB_PATH"
+
+      - name: Build the extension
+        run: |
+          /tmp/php/bin/phpize
+          ./configure --enable-clickhouse-async --with-php-config=/tmp/php/bin/php-config
+          make -j"$(nproc)"
+
+      - name: Wait for ClickHouse
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -u test:test 'http://127.0.0.1:8123/' --data 'SELECT 1' | grep -q '^1$'; then
+              echo "ClickHouse ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "ClickHouse did not become ready"; exit 1
+
+      - name: Run tests
+        run: |
+          set -o pipefail
+          NO_INTERACTION=1 make test TESTS=tests/ | tee test-output.log
+          if grep -qE '(FAILED|BORKED)' test-output.log; then
+            echo "::error::there were failing tests"
+            for f in $(find tests -name '*.diff'); do echo "===== $f ====="; cat "$f"; done
+            exit 1
+          fi
+
+      # Rebuild the extension with gcov, re-run the suite, and report per-TU line
+      # coverage of our own sources. Raw gcov (lcov 2.x misparses gcc-13 data).
+      - name: Coverage (raw gcov, our TUs)
+        run: |
+          CFLAGS="-O0 -g --coverage" CXXFLAGS="-O0 -g --coverage" LDFLAGS="--coverage" \
+            ./configure --enable-clickhouse-async --with-php-config=/tmp/php/bin/php-config
+          rm -f ch_client.lo ch_transport.lo ch_exceptions.lo clickhouse_async.lo \
+                .libs/ch_client.o .libs/ch_transport.o .libs/ch_exceptions.o .libs/clickhouse_async.o
+          make -j"$(nproc)"
+          NO_INTERACTION=1 make test TESTS=tests/ >/dev/null 2>&1 || true
+          {
+            echo '## Coverage (raw gcov, our TUs)'
+            echo '```'
+            cd .libs
+            for tu in clickhouse_async ch_client ch_transport ch_exceptions; do
+              gcov -o . "$tu" 2>/dev/null \
+                | grep -A1 "File '.*${tu}\.cpp'" \
+                | grep -E "File|Lines executed"
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test diffs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diffs
+          path: tests/**/*.diff
+          if-no-files-found: ignore
+
+  # Build PHP, clickhouse-cpp and the extension all with -fsanitize=address and
+  # run the suite under ASAN — catches use-after-free / overflow / double-free in
+  # the error and teardown paths that the plain suite cannot. Leaks are ignored
+  # (USE_ZEND_ALLOC=0 + detect_leaks=0): PHP intentionally leaves arenas at exit.
+  asan:
+    runs-on: ubuntu-24.04
+
+    env:
+      CLICKHOUSE_HOST: 127.0.0.1
+      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_USER: test
+      CLICKHOUSE_PASSWORD: test
+
+    steps:
+      - name: Checkout (with clickhouse-cpp submodule)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Start ClickHouse
+        run: |
+          docker run -d --name clickhouse -p 9000:9000 -p 8123:8123 \
+            -e CLICKHOUSE_USER=test -e CLICKHOUSE_PASSWORD=test \
+            -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+            --ulimit nofile=262144:262144 clickhouse/clickhouse-server:latest
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential autoconf bison re2c pkg-config cmake \
+            libuv1-dev libssl-dev libxml2-dev libsqlite3-dev
+
+      - name: Build clickhouse-cpp (static, PIC, ASAN)
+        run: |
+          cmake -S third_party/clickhouse-cpp -B third_party/clickhouse-cpp/build \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCH_MAP_BOOL_TO_UINT8=OFF \
+            -DWITH_OPENSSL=OFF \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_BENCHMARK=OFF \
+            -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+          cmake --build third_party/clickhouse-cpp/build -j"$(nproc)"
+
+      - name: Build PHP with TrueAsync (ZTS, ASAN)
+        env:
+          PHP_SRC_SHA: 568c83c6b307417d1f75690604353c65df865aa8
+          PHP_ASYNC_SHA: 6b5aaa5d2ea90744a8c4e8c7c4e8d2b4cd24e14a
+          CFLAGS: "-fsanitize=address -fno-omit-frame-pointer -DZEND_TRACK_ARENA_ALLOC -g -O1"
+          CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer -g -O1"
+          LDFLAGS: "-fsanitize=address"
+        run: |
+          git init /tmp/php-src
+          git -C /tmp/php-src remote add origin https://github.com/true-async/php-src.git
+          git -C /tmp/php-src fetch --depth=1 origin "$PHP_SRC_SHA"
+          git -C /tmp/php-src checkout --detach FETCH_HEAD
+          git init /tmp/php-src/ext/async
+          git -C /tmp/php-src/ext/async remote add origin https://github.com/true-async/php-async.git
+          git -C /tmp/php-src/ext/async fetch --depth=1 origin "$PHP_ASYNC_SHA"
+          git -C /tmp/php-src/ext/async checkout --detach FETCH_HEAD
+          cd /tmp/php-src
+          ./buildconf --force
+          ./configure --prefix=/tmp/php \
+            --enable-zts \
+            --enable-async \
+            --enable-sockets \
+            --with-openssl \
+            --disable-cgi \
+            --without-pear
+          make -j"$(nproc)"
+          make install
+          echo "/tmp/php/bin" >> "$GITHUB_PATH"
+
+      - name: Build the extension (ASAN)
+        env:
+          CFLAGS: "-fsanitize=address -fno-omit-frame-pointer -g -O1"
+          CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer -g -O1"
+          LDFLAGS: "-fsanitize=address"
+        run: |
+          /tmp/php/bin/phpize
+          ./configure --enable-clickhouse-async --with-php-config=/tmp/php/bin/php-config
+          make -j"$(nproc)"
+
+      - name: Wait for ClickHouse
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS -u test:test 'http://127.0.0.1:8123/' --data 'SELECT 1' | grep -q '^1$'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ClickHouse did not become ready"; exit 1
+
+      - name: Run tests under ASAN
+        env:
+          USE_ZEND_ALLOC: '0'
+          ASAN_OPTIONS: 'detect_leaks=0:abort_on_error=1:detect_odr_violation=0'
+        run: |
+          set -o pipefail
+          NO_INTERACTION=1 make test TESTS=tests/ 2>&1 | tee asan-output.log
+          if grep -qE '(FAILED|BORKED|AddressSanitizer|runtime error:)' asan-output.log; then
+            echo "::error::ASAN run reported failures"
+            for f in $(find tests -name '*.diff'); do echo "===== $f ====="; cat "$f"; done
+            exit 1
+          fi
