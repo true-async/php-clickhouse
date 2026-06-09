@@ -51,9 +51,11 @@ if (PHP_CLICKHOUSE_ASYNC != 'no') {
 			// CHECK_HEADER_ADD_INCLUDE above, so they are not repeated here.
 			ADD_FLAG("CFLAGS_CLICKHOUSE_ASYNC", "/std:c++17 /EHsc /DNOMINMAX /I \"" + ch_cpp_dir + "\\contrib\\absl\"");
 
-			// clickhouse-cpp links Winsock on Windows; the prebuilt static
-			// archives carry the same dependency.
-			ADD_FLAG("LIBS", ch_libs.join(" ") + " ws2_32.lib");
+			// clickhouse-cpp is built with -DWITH_OPENSSL=ON (TLS support).
+			// libssl.lib and libcrypto.lib live in the PHP SDK deps dir which is
+			// already on the linker search path via --with-php-build. ws2_32.lib
+			// is needed by the clickhouse-cpp Winsock layer.
+			ADD_FLAG("LIBS", ch_libs.join(" ") + " ws2_32.lib libssl.lib libcrypto.lib");
 
 			EXTENSION("clickhouse_async",
 				"clickhouse_async.cpp ch_transport.cpp ch_exceptions.cpp ch_client.cpp",
