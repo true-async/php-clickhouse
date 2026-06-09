@@ -57,7 +57,7 @@ if (PHP_CLICKHOUSE_ASYNC != 'no') {
 
 			EXTENSION("clickhouse_async",
 				"clickhouse_async.cpp ch_transport.cpp ch_exceptions.cpp ch_client.cpp",
-				false,
+				true,
 				"");
 
 			// The async runtime (ext/async) registers the reactor this client
@@ -70,7 +70,7 @@ if (PHP_CLICKHOUSE_ASYNC != 'no') {
 				").\nBuild it first, e.g.:\n" +
 				"  cmake -S third_party\\clickhouse-cpp -B third_party\\clickhouse-cpp\\build -G \"NMake Makefiles\" ^\n" +
 				"    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCH_MAP_BOOL_TO_UINT8=OFF ^\n" +
-				"    -DWITH_OPENSSL=OFF -DBUILD_TESTS=OFF -DBUILD_BENCHMARK=OFF\n" +
+				"    -DWITH_OPENSSL=ON -DBUILD_TESTS=OFF -DBUILD_BENCHMARK=OFF\n" +
 				"  cmake --build third_party\\clickhouse-cpp\\build");
 		}
 	} else {
