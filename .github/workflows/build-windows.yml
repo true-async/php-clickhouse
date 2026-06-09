@@ -1,0 +1,81 @@
+name: ClickHouse Async Windows Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  WINDOWS:
+    name: WINDOWS_X64_ZTS
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    env:
+      PHP_BUILD_CACHE_BASE_DIR: C:\build-cache
+      PHP_BUILD_OBJ_DIR: C:\obj
+      PHP_BUILD_CACHE_SDK_DIR: C:\build-cache\sdk
+      PHP_BUILD_SDK_BRANCH: php-sdk-2.7.1
+      PHP_BUILD_CRT: vs18
+      PLATFORM: x64
+      THREAD_SAFE: "1"
+      INTRINSICS: AVX2
+      PARALLEL: -j2
+      OPCACHE: "1"
+      # php-src and php-async are separate repos whose engine ABI must match.
+      # These mirror the known-good pinned pair from .github/workflows/ci.yml;
+      # bump them together with ci.yml.
+      PHP_SRC_REPO: true-async/php-src
+      PHP_SRC_SHA: 568c83c6b307417d1f75690604353c65df865aa8
+      PHP_ASYNC_REPO: true-async/php-async
+      PHP_ASYNC_SHA: 6b5aaa5d2ea90744a8c4e8c7c4e8d2b4cd24e14a
+    steps:
+      - name: git config
+        run: git config --global core.autocrlf false && git config --global core.eol lf
+
+      - name: Checkout php-src to root
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PHP_SRC_REPO }}
+          ref: ${{ env.PHP_SRC_SHA }}
+
+      - name: Checkout async extension into ext/async
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PHP_ASYNC_REPO }}
+          ref: ${{ env.PHP_ASYNC_SHA }}
+          path: ext/async
+
+      - name: Checkout clickhouse extension (with clickhouse-cpp submodule) into ext/clickhouse_async
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          submodules: recursive
+          path: ext/clickhouse_async
+
+      - name: Overlay clickhouse CI scripts onto the php-src tree
+        shell: cmd
+        run: xcopy /E /I /H /Y ext\clickhouse_async\.github .github
+
+      - name: Setup LibUV (required by ext/async)
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat
+          }
+          C:\vcpkg\vcpkg.exe install libuv:x64-windows
+
+      - name: Build (clickhouse-cpp + PHP with async and clickhouse_async)
+        run: .github/scripts/windows/build.bat
+
+      - name: Smoke test (extension loads, Client class present)
+        run: .github/scripts/windows/test.bat
+
+      - name: Archive built php.exe + extensions on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            C:\obj\Release_TS\*.exe
+            ext\clickhouse_async\third_party\clickhouse-cpp\build\**\*.log
+          if-no-files-found: ignore
