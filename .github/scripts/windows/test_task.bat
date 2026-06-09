@@ -15,20 +15,26 @@ if not exist "%PHP_BUILD_DIR%\php.exe" (
 	exit /b 1
 )
 
-rem Bring dependency DLLs (libuv, OpenSSL, ...) next to php.exe so it can start.
+rem Bring dependency DLLs (libuv, ...) next to php.exe so it can start.
 call %~dp0find-target-branch.bat
 set DEPS_DIR=%PHP_BUILD_CACHE_BASE_DIR%\deps-%BRANCH%-%PHP_SDK_VS%-%PHP_SDK_ARCH%
 if exist "%DEPS_DIR%\bin" copy /y "%DEPS_DIR%\bin\*.dll" "%PHP_BUILD_DIR%\" >nul
 
+rem In-source PHP builds place shared extension DLLs in the build root next to
+rem php.exe, not in ext\. Use the full path so -n (no ini) still loads the DLL.
+set CH_DLL=%PHP_BUILD_DIR%\php_clickhouse_async.dll
+if not exist "%CH_DLL%" (
+    echo ERROR: php_clickhouse_async.dll not found at %CH_DLL%
+    exit /b 1
+)
+
 echo.
 echo --- php -m ---
-"%PHP_BUILD_DIR%\php.exe" -n -d extension_dir="%PHP_BUILD_DIR%\ext" -d extension=php_clickhouse_async.dll -m
+"%PHP_BUILD_DIR%\php.exe" -n -d extension="%CH_DLL%" -m
 echo.
 
-rem The extension is built as a shared DLL (config.w32 EXTENSION third arg = true).
-rem Load it explicitly via -d extension= since -n skips ini files.
 echo --- verifying clickhouse_async ---
-"%PHP_BUILD_DIR%\php.exe" -n -d extension_dir="%PHP_BUILD_DIR%\ext" -d extension=php_clickhouse_async.dll "%~dp0smoke.php"
+"%PHP_BUILD_DIR%\php.exe" -n -d extension="%CH_DLL%" "%~dp0smoke.php"
 set RC=%errorlevel%
 
 echo.
