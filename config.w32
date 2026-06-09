@@ -52,11 +52,23 @@ if (PHP_CLICKHOUSE_ASYNC != 'no') {
 			ADD_FLAG("CFLAGS_CLICKHOUSE_ASYNC", "/std:c++17 /EHsc /DNOMINMAX /I \"" + ch_cpp_dir + "\\contrib\\absl\"");
 
 			// clickhouse-cpp is built with -DWITH_OPENSSL=ON (TLS support).
-			// Use full absolute paths (PHP_BUILD = --with-php-build = DEPS_DIR)
-			// so the linker finds the libs without relying on /libpath:, which
-			// can get double-quoted by the PHP configure script on Windows.
-			var openssl_ssl    = PHP_BUILD + "\\lib\\libssl.lib";
-			var openssl_crypto = PHP_BUILD + "\\lib\\libcrypto.lib";
+			// PHP_BUILD is only defined during a full PHP source build; in a
+			// phpize-based standalone extension build it is undefined. Read the
+			// DEPS_DIR env var directly via WScript.Shell instead.
+			// Fall back to bare names (rely on /libpath:) for local builds where
+			// DEPS_DIR is not set.
+			var openssl_ssl    = "libssl.lib";
+			var openssl_crypto = "libcrypto.lib";
+			try {
+				var _sh    = WScript.CreateObject("WScript.Shell");
+				var _deps  = _sh.ExpandEnvironmentStrings("%DEPS_DIR%");
+				if (_deps !== "%DEPS_DIR%") {
+					var _ssl_path    = _deps + "\\lib\\libssl.lib";
+					var _crypto_path = _deps + "\\lib\\libcrypto.lib";
+					if (FSO.FileExists(_ssl_path))    openssl_ssl    = _ssl_path;
+					if (FSO.FileExists(_crypto_path)) openssl_crypto = _crypto_path;
+				}
+			} catch (e) {}
 			ADD_FLAG("LIBS", ch_libs.join(" ") + " ws2_32.lib " + openssl_ssl + " " + openssl_crypto);
 
 			EXTENSION("clickhouse_async",
