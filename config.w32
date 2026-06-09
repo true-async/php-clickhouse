@@ -1,0 +1,79 @@
+// vim:ft=javascript
+//
+// config.w32 for extension clickhouse_async
+//
+// Windows counterpart of config.m4. Native asynchronous ClickHouse client for
+// PHP TrueAsync, built on the official clickhouse-cpp native-protocol library
+// (bundled as a submodule under third_party/clickhouse-cpp).
+//
+// clickhouse-cpp must be built first as a static library with its bundled
+// contrib (cityhash, lz4, zstd, absl) via CMake. Unlike GNU ld, the MSVC linker
+// resolves inter-archive symbols across passes, so no --start-group is needed.
+// See .github/scripts/windows/build_clickhouse_cpp.bat.
+
+ARG_ENABLE('clickhouse-async', 'Enable clickhouse_async support (native async ClickHouse client)', 'no');
+
+if (PHP_CLICKHOUSE_ASYNC != 'no') {
+
+	var ch_cpp_dir = configure_module_dirname + "\\third_party\\clickhouse-cpp";
+	var ch_cpp_build = ch_cpp_dir + "\\build";
+
+	// clickhouse-cpp public headers live at the submodule root, e.g.
+	// <clickhouse/client.h>; this also verifies the submodule is checked out.
+	if (CHECK_HEADER_ADD_INCLUDE("clickhouse/client.h", "CFLAGS_CLICKHOUSE_ASYNC", ch_cpp_dir)) {
+
+		// Static clickhouse-cpp + its bundled contrib, built by CMake with a
+		// single-config generator (NMake Makefiles, Release): the archive of
+		// each target lands in that target's build directory, mirroring the
+		// Unix layout in config.m4 (lib*.a -> *.lib).
+		var ch_libs = [
+			ch_cpp_build + "\\clickhouse\\clickhouse-cpp-lib.lib",
+			ch_cpp_build + "\\contrib\\cityhash\\cityhash\\cityhash.lib",
+			ch_cpp_build + "\\contrib\\lz4\\lz4\\lz4.lib",
+			ch_cpp_build + "\\contrib\\zstd\\zstd\\zstdstatic.lib",
+			ch_cpp_build + "\\contrib\\absl\\absl\\absl_int128.lib"
+		];
+
+		var ch_missing = null;
+		for (var i = 0; i < ch_libs.length; i++) {
+			if (!FSO.FileExists(ch_libs[i])) {
+				ch_missing = ch_libs[i];
+				break;
+			}
+		}
+
+		if (ch_missing == null) {
+			// C++17 + exceptions; absl (Int128) include from the contrib root.
+			// NOMINMAX: php.h pulls in <windows.h> before the clickhouse headers,
+			// and without it <windows.h> defines min()/max() macros that break
+			// clickhouse-cpp's std::max() usage (columns/array.h). The submodule
+			// root include and HAVE_CLICKHOUSE_CLIENT_H come from the
+			// CHECK_HEADER_ADD_INCLUDE above, so they are not repeated here.
+			ADD_FLAG("CFLAGS_CLICKHOUSE_ASYNC", "/std:c++17 /EHsc /DNOMINMAX /I \"" + ch_cpp_dir + "\\contrib\\absl\"");
+
+			// clickhouse-cpp links Winsock on Windows; the prebuilt static
+			// archives carry the same dependency.
+			ADD_FLAG("LIBS", ch_libs.join(" ") + " ws2_32.lib");
+
+			EXTENSION("clickhouse_async",
+				"clickhouse_async.cpp ch_transport.cpp ch_exceptions.cpp ch_client.cpp",
+				false,
+				"");
+
+			// The async runtime (ext/async) registers the reactor this client
+			// drives at request time; load it first.
+			ADD_EXTENSION_DEP('clickhouse_async', 'async');
+
+			PHP_INSTALL_HEADERS("ext/clickhouse_async", "php_clickhouse_async.h");
+		} else {
+			ERROR("clickhouse_async: prebuilt clickhouse-cpp static library not found (" + ch_missing +
+				").\nBuild it first, e.g.:\n" +
+				"  cmake -S third_party\\clickhouse-cpp -B third_party\\clickhouse-cpp\\build -G \"NMake Makefiles\" ^\n" +
+				"    -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCH_MAP_BOOL_TO_UINT8=OFF ^\n" +
+				"    -DWITH_OPENSSL=OFF -DBUILD_TESTS=OFF -DBUILD_BENCHMARK=OFF\n" +
+				"  cmake --build third_party\\clickhouse-cpp\\build");
+		}
+	} else {
+		ERROR("clickhouse_async: clickhouse-cpp submodule not found. Run: git submodule update --init --recursive");
+	}
+}

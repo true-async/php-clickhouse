@@ -37,8 +37,13 @@ extern "C" {
 #include <clickhouse/client.h>
 
 #include <errno.h>
+
+#ifdef PHP_WIN32
+/* winsock2.h / ws2tcpip.h are pulled in by <clickhouse/base/socket.h> above. */
+#else
 #include <fcntl.h>
 #include <sys/socket.h>
+#endif
 
 #include <memory>
 
@@ -47,6 +52,24 @@ extern "C" {
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
+#endif
+
+/* The byte-movement paths below are identical across platforms except for how
+ * a socket reports "would block": POSIX sets errno (EAGAIN/EWOULDBLOCK), Winsock
+ * keeps its own WSAE* codes behind WSAGetLastError(), and recv/send take an int
+ * length on Windows. These shims absorb that difference. */
+#ifdef PHP_WIN32
+#define CH_SOCK_LAST_ERROR   WSAGetLastError()
+#define CH_SOCK_EINTR        WSAEINTR
+#define CH_SOCK_EAGAIN       WSAEWOULDBLOCK
+#define CH_SOCK_EWOULDBLOCK  WSAEWOULDBLOCK
+#define CH_SOCK_IOLEN(len)   (static_cast<int>(len))
+#else
+#define CH_SOCK_LAST_ERROR   errno
+#define CH_SOCK_EINTR        EINTR
+#define CH_SOCK_EAGAIN       EAGAIN
+#define CH_SOCK_EWOULDBLOCK  EWOULDBLOCK
+#define CH_SOCK_IOLEN(len)   (len)
 #endif
 
 namespace {
@@ -103,7 +126,7 @@ protected:
 	size_t DoRead(void *buf, size_t len) override
 	{
 		for (;;) {
-			ssize_t n = ::recv(fd_, static_cast<char *>(buf), len, 0);
+			ssize_t n = ::recv(fd_, static_cast<char *>(buf), CH_SOCK_IOLEN(len), 0);
 
 			if (n > 0) {
 				return static_cast<size_t>(n);
@@ -113,11 +136,11 @@ protected:
 				throw chasync::ConnectionError("clickhouse: connection closed by peer");
 			}
 
-			if (errno == EINTR) {
+			if (CH_SOCK_LAST_ERROR == CH_SOCK_EINTR) {
 				continue;
 			}
 
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			if (CH_SOCK_LAST_ERROR == CH_SOCK_EAGAIN || CH_SOCK_LAST_ERROR == CH_SOCK_EWOULDBLOCK) {
 				if (!ch_await_socket(fd_, ASYNC_READABLE, 0)) {
 					throw chasync::ConnectionError("clickhouse: read interrupted");
 				}
@@ -145,18 +168,18 @@ protected:
 		size_t sent = 0;
 
 		while (sent < len) {
-			ssize_t n = ::send(fd_, p + sent, len - sent, MSG_NOSIGNAL);
+			ssize_t n = ::send(fd_, p + sent, CH_SOCK_IOLEN(len - sent), MSG_NOSIGNAL);
 
 			if (n > 0) {
 				sent += static_cast<size_t>(n);
 				continue;
 			}
 
-			if (errno == EINTR) {
+			if (CH_SOCK_LAST_ERROR == CH_SOCK_EINTR) {
 				continue;
 			}
 
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
+			if (CH_SOCK_LAST_ERROR == CH_SOCK_EAGAIN || CH_SOCK_LAST_ERROR == CH_SOCK_EWOULDBLOCK) {
 				if (!ch_await_socket(fd_, ASYNC_WRITABLE, 0)) {
 					throw chasync::ConnectionError("clickhouse: write interrupted");
 				}
@@ -208,7 +231,10 @@ public:
 private:
 	void set_nonblocking()
 	{
-#ifndef PHP_WIN32
+#ifdef PHP_WIN32
+		u_long nonblocking = 1;
+		ioctlsocket(handle_, FIONBIO, &nonblocking);
+#else
 		int flags = fcntl(handle_, F_GETFL, 0);
 		if (flags >= 0) {
 			fcntl(handle_, F_SETFL, flags | O_NONBLOCK);
