@@ -2,7 +2,9 @@ name: ClickHouse Async Windows Build
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   WINDOWS:
@@ -69,13 +71,3 @@ jobs:
 
       - name: Smoke test (extension loads, Client class present)
         run: .github/scripts/windows/test.bat
-
-      - name: Archive built php.exe + extensions on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            C:\obj\Release_TS\*.exe
-            ext\clickhouse_async\third_party\clickhouse-cpp\build\**\*.log
-          if-no-files-found: ignore
