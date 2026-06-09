@@ -15,20 +15,20 @@ if not exist "%PHP_BUILD_DIR%\php.exe" (
 	exit /b 1
 )
 
-rem Bring dependency DLLs (libuv, ...) next to php.exe so it can start.
+rem Bring dependency DLLs (libuv, OpenSSL, ...) next to php.exe so it can start.
 call %~dp0find-target-branch.bat
 set DEPS_DIR=%PHP_BUILD_CACHE_BASE_DIR%\deps-%BRANCH%-%PHP_SDK_VS%-%PHP_SDK_ARCH%
 if exist "%DEPS_DIR%\bin" copy /y "%DEPS_DIR%\bin\*.dll" "%PHP_BUILD_DIR%\" >nul
 
 echo.
 echo --- php -m ---
-"%PHP_BUILD_DIR%\php.exe" -n -m
+"%PHP_BUILD_DIR%\php.exe" -n -d extension_dir="%PHP_BUILD_DIR%\ext" -d extension=php_clickhouse_async.dll -m
 echo.
 
-rem The extension is built statically into php.exe (no ini needed, -n). The
-rem checks live in smoke.php so cmd does not mangle '!' and quotes in inline code.
+rem The extension is built as a shared DLL (config.w32 EXTENSION third arg = true).
+rem Load it explicitly via -d extension= since -n skips ini files.
 echo --- verifying clickhouse_async ---
-"%PHP_BUILD_DIR%\php.exe" -n "%~dp0smoke.php"
+"%PHP_BUILD_DIR%\php.exe" -n -d extension_dir="%PHP_BUILD_DIR%\ext" -d extension=php_clickhouse_async.dll "%~dp0smoke.php"
 set RC=%errorlevel%
 
 echo.
