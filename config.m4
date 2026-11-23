@@ -15,7 +15,9 @@ if test "$PHP_CLICKHOUSE_ASYNC" != "no"; then
   dnl clickhouse-cpp requires a C++17 compiler.
   PHP_REQUIRE_CXX()
   AC_LANG_PUSH([C++])
-  CLICKHOUSE_ASYNC_STD="-std=c++17"
+  dnl The PUBLIC compile definitions of clickhouse-cpp-lib, matching the CMake
+  dnl options it was built with; they change the type behind Int128 and Bool.
+  CLICKHOUSE_ASYNC_STD="-std=c++17 -DCH_USE_ABSEIL_FOR_BIGNUM=1 -DCH_MAP_BOOL_TO_UINT8=0 -DCH_NON_OPTIONAL_CURRENT_ENDPOINT=0"
   AC_LANG_POP([C++])
 
   dnl Link the C++ standard library into the shared object.
@@ -45,7 +47,7 @@ if test "$PHP_CLICKHOUSE_ASYNC" != "no"; then
 
   CLICKHOUSE_ASYNC_SHARED_LIBADD="$CLICKHOUSE_ASYNC_SHARED_LIBADD -Wl,--start-group \
 $CLICKHOUSE_CPP_BUILD/clickhouse/libclickhouse-cpp-lib.a \
-$CLICKHOUSE_CPP_BUILD/contrib/cityhash/cityhash/libcityhash.a \
+$CLICKHOUSE_CPP_BUILD/clickhouse/cityhash/libcityhash.a \
 $CLICKHOUSE_CPP_BUILD/contrib/lz4/lz4/liblz4.a \
 $CLICKHOUSE_CPP_BUILD/contrib/zstd/zstd/libzstdstatic.a \
 $CLICKHOUSE_CPP_BUILD/contrib/absl/absl/libabsl_int128.a \

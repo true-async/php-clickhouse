@@ -28,7 +28,7 @@ if (PHP_CLICKHOUSE_ASYNC != 'no') {
 		// Unix layout in config.m4 (lib*.a -> *.lib).
 		var ch_libs = [
 			ch_cpp_build + "\\clickhouse\\clickhouse-cpp-lib.lib",
-			ch_cpp_build + "\\contrib\\cityhash\\cityhash\\cityhash.lib",
+			ch_cpp_build + "\\clickhouse\\cityhash\\cityhash.lib",
 			ch_cpp_build + "\\contrib\\lz4\\lz4\\lz4.lib",
 			ch_cpp_build + "\\contrib\\zstd\\zstd\\zstdstatic.lib",
 			ch_cpp_build + "\\contrib\\absl\\absl\\absl_int128.lib"
@@ -49,6 +49,8 @@ if (PHP_CLICKHOUSE_ASYNC != 'no') {
 			// clickhouse-cpp's std::max() usage (columns/array.h). The submodule
 			// root include and HAVE_CLICKHOUSE_CLIENT_H come from the
 			// CHECK_HEADER_ADD_INCLUDE above, so they are not repeated here.
+			// The PUBLIC compile definitions of clickhouse-cpp-lib, matching its CMake options.
+			ADD_FLAG("CFLAGS_CLICKHOUSE_ASYNC", "/DCH_USE_ABSEIL_FOR_BIGNUM=1 /DCH_MAP_BOOL_TO_UINT8=0 /DCH_NON_OPTIONAL_CURRENT_ENDPOINT=0");
 			ADD_FLAG("CFLAGS_CLICKHOUSE_ASYNC", "/std:c++17 /EHsc /DNOMINMAX /I \"" + ch_cpp_dir + "\\contrib\\absl\"");
 
 			// clickhouse-cpp is built with -DWITH_OPENSSL=ON (TLS support).
