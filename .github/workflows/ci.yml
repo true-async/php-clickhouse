@@ -76,10 +76,10 @@ jobs:
         env:
           # php-src and php-async (ext/async) are two separate repos whose engine
           # ABI must match. They are pinned to a known-good commit pair; bump both
-          # together. The async engine API is at v0.20.0
-          # (zend_async_scheduler_register carries scope_await_after_cancellation_fn).
-          PHP_SRC_SHA: 568c83c6b307417d1f75690604353c65df865aa8
-          PHP_ASYNC_SHA: 6b5aaa5d2ea90744a8c4e8c7c4e8d2b4cd24e14a
+          # together. They are the TrueAsync 1.0.0 tags (php-8.6.1-trueasync-1.0.0,
+          # php-async v1.0.0), async engine ABI v0.27.0.
+          PHP_SRC_SHA: fa9d2c12e97ea740dc007bbee1a53e35965a5e67
+          PHP_ASYNC_SHA: 70e20ebdd1a4e20a1404a1aba4f8ab1f0019dd27
         run: |
           # Shallow-fetch the exact pinned commits (GitHub allows fetch-by-SHA).
           git init /tmp/php-src
@@ -234,8 +234,8 @@ jobs:
 
       - name: Build PHP with TrueAsync (ZTS, ASAN)
         env:
-          PHP_SRC_SHA: 568c83c6b307417d1f75690604353c65df865aa8
-          PHP_ASYNC_SHA: 6b5aaa5d2ea90744a8c4e8c7c4e8d2b4cd24e14a
+          PHP_SRC_SHA: fa9d2c12e97ea740dc007bbee1a53e35965a5e67
+          PHP_ASYNC_SHA: 70e20ebdd1a4e20a1404a1aba4f8ab1f0019dd27
           CFLAGS: "-fsanitize=address -fno-omit-frame-pointer -DZEND_TRACK_ARENA_ALLOC -g -O1"
           CXXFLAGS: "-fsanitize=address -fno-omit-frame-pointer -g -O1"
           LDFLAGS: "-fsanitize=address"
